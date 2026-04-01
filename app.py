@@ -1,3 +1,5 @@
+# app.py
+import io
 import json
 import time
 import hmac
@@ -114,12 +116,29 @@ def avail_short(file_obj):
 def try_read_table(uploaded_file):
     if uploaded_file is None:
         return None
+
     name = uploaded_file.name.lower()
+
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
     try:
         if name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
+            try:
+                df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+            except Exception:
+                try:
+                    uploaded_file.seek(0)
+                except Exception:
+                    pass
+                df = pd.read_csv(uploaded_file)
+        elif name.endswith(".xlsx") or name.endswith(".xls"):
             df = pd.read_excel(uploaded_file)
+        else:
+            return None
+
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception:
@@ -129,8 +148,9 @@ def try_read_table(uploaded_file):
 def find_col(df, keywords):
     if df is None or df.empty:
         return None
-    lower = {str(c).lower(): c for c in df.columns}
+    lower = {str(c).lower().strip(): c for c in df.columns}
     for kw in keywords:
+        kw = kw.lower().strip()
         for k, real in lower.items():
             if kw in k:
                 return real
@@ -174,13 +194,33 @@ def center_of(box_norm):
 # Layout configuration
 # ----------------------------
 APP_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = APP_DIR / "assets"
+
 DEFAULT_LAYOUT_CANDIDATES = [
+    ASSETS_DIR / "animal_layout.png",
+    ASSETS_DIR / "animal_layout.PNG",
+    ASSETS_DIR / "animal_layout.jpg",
+    ASSETS_DIR / "animal_layout.jpeg",
+    ASSETS_DIR / "Animal_House_Layout.png",
+    ASSETS_DIR / "Animal_House_Layout.PNG",
+    ASSETS_DIR / "Animal_House_Layout.jpg",
+    ASSETS_DIR / "Animal_House_Layout.jpeg",
+    ASSETS_DIR / "animal house Area 190-Model.png",
+    ASSETS_DIR / "animal house Area 190-Model.PNG",
+    ASSETS_DIR / "animal house Area 190-Model.jpg",
+    ASSETS_DIR / "animal house Area 190-Model.jpeg",
     APP_DIR / "animal_layout.png",
     APP_DIR / "animal_layout.PNG",
-    APP_DIR / "animal house Area 190-Model.png",
-    APP_DIR / "animal house Area 190-Model.PNG",
+    APP_DIR / "animal_layout.jpg",
+    APP_DIR / "animal_layout.jpeg",
     APP_DIR / "Animal_House_Layout.png",
     APP_DIR / "Animal_House_Layout.PNG",
+    APP_DIR / "Animal_House_Layout.jpg",
+    APP_DIR / "Animal_House_Layout.jpeg",
+    APP_DIR / "animal house Area 190-Model.png",
+    APP_DIR / "animal house Area 190-Model.PNG",
+    APP_DIR / "animal house Area 190-Model.jpg",
+    APP_DIR / "animal house Area 190-Model.jpeg",
 ]
 
 DEFAULT_ROOM_DEFINITIONS = {
@@ -279,21 +319,23 @@ def build_default_routes(room_configs):
 @st.cache_data(show_spinner=False)
 def load_default_layout_bytes():
     for layout_path in DEFAULT_LAYOUT_CANDIDATES:
-        if layout_path.exists():
-            return layout_path.name, layout_path.read_bytes()
+        if layout_path.exists() and layout_path.is_file():
+            try:
+                return str(layout_path), layout_path.read_bytes()
+            except Exception:
+                continue
     return None, None
 
 
 def get_default_layout():
-    name, raw = load_default_layout_bytes()
+    layout_path, raw = load_default_layout_bytes()
     if raw is None:
-        return None, name
+        return None, None
     try:
-        return Image.open(Path(name) if False else __import__('io').BytesIO(raw)).convert("RGBA"), name
+        img = Image.open(io.BytesIO(raw)).convert("RGBA")
+        return img, layout_path
     except Exception:
-        # fallback if unusual PIL behavior
-        import io
-        return Image.open(io.BytesIO(raw)).convert("RGBA"), name
+        return None, layout_path
 
 
 def ensure_room_configs():
@@ -434,6 +476,7 @@ with st.expander("📁 Upload evidence files (optional)", expanded=False):
 df_receipt = try_read_table(receipt_log)
 df_sealed = try_read_table(sealed_source_log)
 df_invivo = try_read_table(invivo_log)
+df_invitro = try_read_table(invitro_log)
 df_animals = try_read_table(animals_log)
 df_tld = try_read_table(tld_log)
 
@@ -471,7 +514,7 @@ elif df_receipt is not None and purpose_col:
 
 animals_count = "—"
 if df_animals is not None and not df_animals.empty:
-    animal_id = find_col(df_animals, ["animalid", "animal", "id"])
+    animal_id = find_col(df_animals, ["animalid", "animal_id", "animal", "id"])
     animals_count = str(df_animals[animal_id].nunique()) if animal_id else str(len(df_animals))
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -516,24 +559,42 @@ default_tld = pd.DataFrame([
     [9700, "MR YOUSEF RAED YOUSEF", 6205, 0.120, 0.123, "NEW"],
 ], columns=["Code", "Name", "Card", "Hp10_mSv", "Hp07_mSv", "Remarks"])
 
-tld = df_tld if (df_tld is not None and not df_tld.empty) else default_tld
-tld["Hp10_mSv"] = pd.to_numeric(tld.get("Hp10_mSv"), errors="coerce")
+tld = df_tld.copy() if (df_tld is not None and not df_tld.empty) else default_tld.copy()
 
-monitored = int(tld["Hp10_mSv"].notna().sum())
-hp10_min = float(tld["Hp10_mSv"].min())
-hp10_max = float(tld["Hp10_mSv"].max())
-hp10_mean = float(tld["Hp10_mSv"].mean())
+hp10_col = find_col(tld, ["hp10", "hp(10)", "deep dose", "whole body"])
+hp07_col = find_col(tld, ["hp07", "hp(07)", "skin dose"])
+name_col = find_col(tld, ["name", "staff", "worker"])
+
+if hp10_col is None:
+    hp10_col = "Hp10_mSv"
+    if hp10_col not in tld.columns:
+        tld[hp10_col] = pd.NA
+
+if hp07_col is None and "Hp07_mSv" in tld.columns:
+    hp07_col = "Hp07_mSv"
+
+if name_col is None:
+    if "Name" not in tld.columns:
+        tld["Name"] = ""
+    name_col = "Name"
+
+tld[hp10_col] = pd.to_numeric(tld[hp10_col], errors="coerce")
+
+monitored = int(tld[hp10_col].notna().sum())
+hp10_min = float(tld[hp10_col].min()) if monitored else 0.0
+hp10_max = float(tld[hp10_col].max()) if monitored else 0.0
+hp10_mean = float(tld[hp10_col].mean()) if monitored else 0.0
 annual_proj = hp10_mean * 4
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
     st.metric("Monitored staff", monitored)
 with k2:
-    st.metric("Quarterly Hp(10) range", f"{hp10_min:.3f}–{hp10_max:.3f} mSv")
+    st.metric("Quarterly Hp(10) range", f"{hp10_min:.3f}–{hp10_max:.3f} mSv" if monitored else "—")
 with k3:
-    st.metric("Average Hp(10)", f"{hp10_mean:.3f} mSv")
+    st.metric("Average Hp(10)", f"{hp10_mean:.3f} mSv" if monitored else "—")
 with k4:
-    st.metric("Projected annual", f"{annual_proj:.2f} mSv/year")
+    st.metric("Projected annual", f"{annual_proj:.2f} mSv/year" if monitored else "—")
 
 st.caption("🟢 Doses are far below the occupational limit (20 mSv/year). This supports a strong ALARA message for committee review.")
 
@@ -541,8 +602,8 @@ with st.expander("🔎 View staff dose table", expanded=False):
     q = st.text_input("Search staff name", key="dose_search")
     view = tld.copy()
     if q.strip():
-        view = view[view["Name"].astype(str).str.contains(q, case=False, na=False)]
-    st.dataframe(view.sort_values("Hp10_mSv", ascending=False), use_container_width=True, hide_index=True)
+        view = view[view[name_col].astype(str).str.contains(q, case=False, na=False)]
+    st.dataframe(view.sort_values(hp10_col, ascending=False), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -554,12 +615,15 @@ st.subheader("Facility layout and interactive radiation flow")
 
 base_layout = None
 loaded_layout_name = None
+
 if floorplan_receipt is not None:
     try:
         base_layout = Image.open(floorplan_receipt).convert("RGBA")
         loaded_layout_name = floorplan_receipt.name
     except Exception:
         base_layout = None
+        loaded_layout_name = None
+
 if base_layout is None:
     base_layout, loaded_layout_name = get_default_layout()
 
@@ -588,6 +652,7 @@ with st.container(border=True):
         editable_area = st.selectbox("Area to adjust", room_names, index=0)
         current = room_configs[editable_area]
         col_a, col_b = st.columns(2)
+
         with col_a:
             x1 = st.slider("x1", 0.00, 0.98, float(current["box_norm"][0]), 0.01, key=f"{editable_area}_x1")
             y1 = st.slider("y1", 0.00, 0.98, float(current["box_norm"][1]), 0.01, key=f"{editable_area}_y1")
@@ -630,7 +695,7 @@ with st.container(border=True):
         )
 
         if loaded_layout_name:
-            st.caption(f"Active base layout: **{loaded_layout_name}**")
+            st.caption(f"Active base layout: **{Path(loaded_layout_name).name}**")
         else:
             st.caption("No local layout file detected yet")
 
@@ -649,16 +714,18 @@ with st.container(border=True):
                 zone_opacity=zone_opacity,
                 line_width_px=line_width_px,
             )
+
             if use_custom_overlay and route_overlay is not None:
                 try:
                     uploaded_overlay = Image.open(route_overlay).convert("RGBA").resize(interactive_img.size)
                     interactive_img = Image.alpha_composite(interactive_img, uploaded_overlay)
                 except Exception:
                     st.warning("Uploaded route overlay could not be applied; showing built-in interactive view instead.")
+
             st.image(interactive_img, caption="Interactive animal-house facility layout", use_container_width=True)
             render_room_details(None if selected_room == "None" else selected_room, room_defs)
         else:
-            st.warning("No facility layout available. Upload a PNG/JPG or keep an animal layout PNG next to the app file.")
+            st.warning("No facility layout available. Upload a PNG/JPG or keep an animal layout image inside the assets folder or next to the app file.")
             st.code("\n".join(str(p) for p in DEFAULT_LAYOUT_CANDIDATES), language="text")
 
 with st.expander("📋 Current room configuration", expanded=False):
@@ -687,12 +754,18 @@ with st.expander("🗺️ Additional maps and evidence", expanded=False):
     col1, col2 = st.columns(2)
     with col1:
         if zoning_plan is not None:
-            st.image(Image.open(zoning_plan), caption="Uploaded approved zoning plan", use_container_width=True)
+            try:
+                st.image(Image.open(zoning_plan), caption="Uploaded approved zoning plan", use_container_width=True)
+            except Exception:
+                st.warning("Uploaded zoning plan could not be displayed.")
         else:
             st.info("Upload the approved zoning plan to compare with the dashboard overlay.")
     with col2:
         if route_overlay is not None:
-            st.image(Image.open(route_overlay), caption="Uploaded route overlay", use_container_width=True)
+            try:
+                st.image(Image.open(route_overlay), caption="Uploaded route overlay", use_container_width=True)
+            except Exception:
+                st.warning("Uploaded route overlay could not be displayed.")
         else:
             st.info("Upload a transparent route overlay PNG if you want to compare the built-in routing with your approved overlay.")
 
@@ -702,13 +775,22 @@ with st.expander("📊 Simple charts", expanded=False):
         if df is None or rn is None or df.empty:
             st.info("Upload a log with 'Radionuclide/Isotope' to show this chart.")
             return
-        vc = df[rn].astype(str).str.strip().value_counts().head(8)
+
+        vc = df[rn].astype(str).str.strip()
+        vc = vc[vc != ""].value_counts().head(8)
+
+        if vc.empty:
+            st.info("No radionuclide values found for this chart.")
+            return
+
         fig = plt.figure()
         plt.bar(vc.index.tolist(), vc.values.tolist())
         plt.title(title)
         plt.xlabel("Radionuclide")
         plt.ylabel("Count")
+        plt.xticks(rotation=30, ha="right")
         st.pyplot(fig)
+        plt.close(fig)
 
     g1, g2, g3 = st.columns(3)
     with g1:
